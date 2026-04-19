@@ -1,8 +1,11 @@
-FROM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+ARG TARGETOS TARGETARCH TARGETVARIANT
 WORKDIR /build
 COPY go.mod ./
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bmw-bridge ./cmd/main.go
+RUN GOARM=$(echo "$TARGETVARIANT" | tr -d 'v') \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -ldflags="-s -w" -o bmw-bridge ./cmd/main.go
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
