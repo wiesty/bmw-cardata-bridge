@@ -8,13 +8,26 @@ import (
 	"github.com/wiesty/bmw-cardata-bridge/internal/bmw"
 )
 
+func cors(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func RegisterHandlers(mux *http.ServeMux, cache *bmw.Cache) {
-	mux.HandleFunc("/health", healthHandler(cache))
-	mux.HandleFunc("/vehicle", vehicleHandler(cache))
-	mux.HandleFunc("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", cors(healthHandler(cache)))
+	mux.HandleFunc("/vehicle", cors(vehicleHandler(cache)))
+	mux.HandleFunc("/openapi.json", cors(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(openapiSpec))
-	})
+	}))
 	mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(swaggerUI))
