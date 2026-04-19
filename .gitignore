@@ -1,0 +1,24 @@
+# Environment & secrets
+.env
+*.env.local
+
+# Token & state files
+/data/
+session.json
+state.json
+
+# Go build output
+bmw-bridge
+/dist/
+
+# Go test cache
+*.test
+*.out
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
