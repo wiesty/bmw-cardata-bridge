@@ -4,102 +4,36 @@ const openapiSpec = `{
   "openapi": "3.0.3",
   "info": {
     "title": "Wiestys Unofficial BMW CarData Bridge",
-    "description": "Minimal REST bridge for BMW CarData. Simplified wrapper around the official BMW CarData API — exposes vehicle telemetry as a local REST endpoint.\n\n**Rate limit:** 50 API calls / 24h. Default poll interval: 30 min.\n\n**Note:** Fields that don't apply to your vehicle type (e.g. battery fields on ICE, fuel fields on BEV) are omitted from the response.",
-    "version": "1.0.0"
+    "description": "Minimal REST bridge for BMW CarData. Simplified wrapper around the official BMW CarData API — exposes vehicle telemetry as a local REST endpoint.\n\n**Rate limit:** 50 API calls / 24h per vehicle. Default poll interval: 30 min.\n\n**Authentication:** If API_KEY env var is set, all endpoints (except /docs) require X-API-Key or Authorization: Bearer header.\n\n**Note:** Fields that don't apply to your vehicle type (e.g. battery fields on ICE, fuel fields on BEV) are omitted from the response.",
+    "version": "1.1.0"
   },
   "servers": [
     { "url": "http://localhost:8080", "description": "Local" }
   ],
-  "paths": {
-    "/health": {
-      "get": {
-        "summary": "Health check",
-        "description": "Returns service status and timestamp of last successful poll.",
-        "responses": {
-          "200": {
-            "description": "Service running, data available",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Health" },
-                "example": { "status": "ok", "last_update": "2026-04-19T12:00:00Z" }
-              }
-            }
-          },
-          "503": {
-            "description": "Waiting for first poll (startup)",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Health" },
-                "example": { "status": "starting", "last_update": null }
-              }
-            }
-          }
-        }
+  "components": {
+    "securitySchemes": {
+      "ApiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Required only when API_KEY env var is set. Can also be passed as Authorization: Bearer <key>."
       }
     },
-    "/vehicle": {
-      "get": {
-        "summary": "Vehicle telemetry",
-        "description": "Returns the latest cached vehicle data. All optional fields are omitted when not available for this vehicle type. Data is refreshed every POLL_INTERVAL_MINUTES (default 30).",
-        "responses": {
-          "200": {
-            "description": "Latest vehicle data",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Vehicle" },
-                "examples": {
-                  "bev": {
-                    "summary": "BEV (full electric)",
-                    "value": {
-                      "mileage_km": 12345, "last_update": "2026-04-19T12:00:00Z",
-                      "range_km": 380, "range_electric_km": 380,
-                      "battery_soc_pct": 92.5, "battery_soc_target_pct": 100,
-                      "charging_status": "CHARGING", "charging_power_kw": 11.0,
-                      "charging_time_remaining_min": 45, "is_plugged_in": true,
-                      "is_moving": false, "is_ignition_on": false, "is_engine_on": false,
-                      "doors_locked": "LOCKED", "doors_status": "CLOSED",
-                      "door_front_left_open": false, "door_front_right_open": false,
-                      "door_rear_left_open": false, "door_rear_right_open": false,
-                      "trunk_open": false, "hood_open": false, "lights_on": false,
-                      "tire_pressure_fl_kpa": 250, "tire_pressure_fr_kpa": 250,
-                      "tire_pressure_rl_kpa": 240, "tire_pressure_rr_kpa": 240,
-                      "tire_diagnosis": "OK", "service_distance_km": 8500
-                    }
-                  },
-                  "ice": {
-                    "summary": "ICE (combustion engine)",
-                    "value": {
-                      "mileage_km": 45000, "last_update": "2026-04-19T12:00:00Z",
-                      "range_km": 520, "range_fuel_km": 520,
-                      "fuel_level_pct": 78.0, "fuel_level_liters": 46.8,
-                      "is_moving": false, "is_ignition_on": false, "is_engine_on": false,
-                      "doors_locked": "LOCKED", "doors_status": "CLOSED",
-                      "trunk_open": false, "service_distance_km": 12000
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "No data yet (first poll pending)",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
-              }
-            }
-          }
-        }
-      }
-    }
-  },
-  "components": {
     "schemas": {
       "Health": {
         "type": "object",
         "properties": {
           "status": { "type": "string", "enum": ["ok", "starting"] },
           "last_update": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "VehicleEntry": {
+        "type": "object",
+        "required": ["vin", "ready"],
+        "properties": {
+          "vin":         { "type": "string", "description": "Vehicle Identification Number" },
+          "last_update": { "type": "string", "format": "date-time", "nullable": true, "description": "Timestamp of last successful poll" },
+          "ready":       { "type": "boolean", "description": "Whether data is available" }
         }
       },
       "Vehicle": {
@@ -151,6 +85,146 @@ const openapiSpec = `{
         "type": "object",
         "properties": {
           "error": { "type": "string" }
+        }
+      }
+    }
+  },
+  "security": [],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "description": "Returns service status and timestamp of last successful poll across all tracked vehicles.",
+        "responses": {
+          "200": {
+            "description": "Service running, data available",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" },
+                "example": { "status": "ok", "last_update": "2026-04-19T12:00:00Z" }
+              }
+            }
+          },
+          "503": {
+            "description": "Waiting for first poll (startup)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" },
+                "example": { "status": "starting", "last_update": null }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles": {
+      "get": {
+        "summary": "List tracked vehicles",
+        "description": "Returns all VINs currently tracked by this bridge instance with their data availability status.",
+        "responses": {
+          "200": {
+            "description": "List of tracked vehicles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/VehicleEntry" }
+                },
+                "example": [
+                  { "vin": "WBA12345678901234", "last_update": "2026-04-19T12:00:00Z", "ready": true },
+                  { "vin": "WBA98765432109876", "last_update": null, "ready": false }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicle/{vin}": {
+      "get": {
+        "summary": "Vehicle telemetry by VIN",
+        "description": "Returns the latest cached data for the specified VIN. Use this endpoint when tracking multiple vehicles.",
+        "parameters": [
+          {
+            "name": "vin",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Vehicle Identification Number (case-insensitive)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest vehicle data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Vehicle" }
+              }
+            }
+          },
+          "404": {
+            "description": "VIN not tracked by this bridge instance",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "No data yet (first poll pending)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/vehicle": {
+      "get": {
+        "summary": "Vehicle telemetry (single-vehicle shortcut)",
+        "description": "Returns the latest cached vehicle data. Works only when a single VIN is tracked. If multiple VINs are configured, use /vehicle/{vin} instead.",
+        "responses": {
+          "200": {
+            "description": "Latest vehicle data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Vehicle" },
+                "examples": {
+                  "bev": {
+                    "summary": "BEV (full electric)",
+                    "value": {
+                      "mileage_km": 12345, "last_update": "2026-04-19T12:00:00Z",
+                      "range_km": 380, "range_electric_km": 380,
+                      "battery_soc_pct": 92.5, "battery_soc_target_pct": 100,
+                      "charging_status": "CHARGING", "charging_power_kw": 11.0,
+                      "charging_time_remaining_min": 45, "is_plugged_in": true,
+                      "is_moving": false, "is_ignition_on": false, "is_engine_on": false,
+                      "doors_locked": "LOCKED", "doors_status": "CLOSED",
+                      "door_front_left_open": false, "door_front_right_open": false,
+                      "door_rear_left_open": false, "door_rear_right_open": false,
+                      "trunk_open": false, "hood_open": false, "lights_on": false,
+                      "tire_pressure_fl_kpa": 250, "tire_pressure_fr_kpa": 250,
+                      "tire_pressure_rl_kpa": 240, "tire_pressure_rr_kpa": 240,
+                      "tire_diagnosis": "OK", "service_distance_km": 8500
+                    }
+                  },
+                  "ice": {
+                    "summary": "ICE (combustion engine)",
+                    "value": {
+                      "mileage_km": 45000, "last_update": "2026-04-19T12:00:00Z",
+                      "range_km": 520, "range_fuel_km": 520,
+                      "fuel_level_pct": 78.0, "fuel_level_liters": 46.8,
+                      "is_moving": false, "is_ignition_on": false, "is_engine_on": false,
+                      "doors_locked": "LOCKED", "doors_status": "CLOSED",
+                      "trunk_open": false, "service_distance_km": 12000
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Multiple vehicles tracked — use /vehicle/{vin}",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "No data yet (first poll pending)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
         }
       }
     }

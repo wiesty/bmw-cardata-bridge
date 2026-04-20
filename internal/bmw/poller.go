@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -129,17 +130,51 @@ func (c *Cache) Get() *VehicleData {
 	return c.data
 }
 
+// VehicleRegistry is a thread-safe map from VIN to Cache for multi-vehicle support.
+type VehicleRegistry struct {
+	mu     sync.RWMutex
+	caches map[string]*Cache
+}
+
+func NewRegistry() *VehicleRegistry {
+	return &VehicleRegistry{caches: make(map[string]*Cache)}
+}
+
+func (r *VehicleRegistry) Add(vin string, c *Cache) {
+	r.mu.Lock()
+	r.caches[vin] = c
+	r.mu.Unlock()
+}
+
+func (r *VehicleRegistry) Get(vin string) *Cache {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.caches[vin]
+}
+
+// VINs returns all registered VINs in sorted order.
+func (r *VehicleRegistry) VINs() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	vins := make([]string, 0, len(r.caches))
+	for v := range r.caches {
+		vins = append(vins, v)
+	}
+	sort.Strings(vins)
+	return vins
+}
+
 // state persists VIN, container ID, last poll time, and cached vehicle data across restarts.
 type state struct {
-	VIN           string       `json:"vin"`
+	VIN           string       `json:"vin,omitempty"`
 	ContainerID   string       `json:"container_id"`
 	ContainerName string       `json:"container_name,omitempty"`
 	LastPollTime  time.Time    `json:"last_poll_time,omitempty"`
 	CachedData    *VehicleData `json:"cached_data,omitempty"`
 }
 
-func loadState(dataDir string) (*state, error) {
-	data, err := os.ReadFile(filepath.Join(dataDir, "state.json"))
+func loadState(path string) (*state, error) {
+	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return &state{}, nil
 	}
@@ -150,45 +185,67 @@ func loadState(dataDir string) (*state, error) {
 	return &s, json.Unmarshal(data, &s)
 }
 
-func saveState(dataDir string, s *state) error {
+func saveState(path string, s *state) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dataDir, "state.json"), data, 0600)
+	return os.WriteFile(path, data, 0600)
 }
 
-// Bootstrap loads or discovers VIN and container ID, persisting them to state.json.
+// Bootstrap loads or discovers a single VIN and container ID, persisting them to state.json.
+// Kept for backward compatibility with single-vehicle mode.
 func Bootstrap(ctx context.Context, client *Client, dataDir string) (vin, containerID string, err error) {
-	s, err := loadState(dataDir)
+	vins, cID, err := BootstrapMulti(ctx, client, dataDir, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("load state: %w", err)
+		return "", "", err
+	}
+	return vins[0], cID, nil
+}
+
+// BootstrapMulti discovers/validates VINs and ensures the shared container exists.
+// If explicitVINs is non-empty, those VINs are used instead of auto-discovery.
+// Container info is persisted to state.json (shared); per-VIN poll state uses state_<VIN>.json.
+func BootstrapMulti(ctx context.Context, client *Client, dataDir string, explicitVINs []string) (vins []string, containerID string, err error) {
+	statePath := filepath.Join(dataDir, "state.json")
+	s, err := loadState(statePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("load state: %w", err)
 	}
 
-	if s.VIN == "" {
-		s.VIN, err = discoverVIN(ctx, client)
+	if len(explicitVINs) > 0 {
+		vins = explicitVINs
+	} else if s.VIN != "" {
+		vins = []string{s.VIN}
+	} else {
+		vin, err := discoverVIN(ctx, client)
 		if err != nil {
-			return "", "", fmt.Errorf("discover VIN: %w", err)
+			return nil, "", fmt.Errorf("discover VIN: %w", err)
 		}
-		log.Printf("[bmw] discovered VIN: %s", s.VIN)
+		log.Printf("[bmw] discovered VIN: %s", vin)
+		vins = []string{vin}
 	}
 
-	// If the stored container was built with a different descriptor set, recreate it.
 	if s.ContainerID == "" || s.ContainerName != containerName {
 		s.ContainerID = ""
 		s.ContainerID, err = ensureContainer(ctx, client)
 		if err != nil {
-			return "", "", fmt.Errorf("ensure container: %w", err)
+			return nil, "", fmt.Errorf("ensure container: %w", err)
 		}
 		s.ContainerName = containerName
 		log.Printf("[bmw] using container: %s (%s)", s.ContainerID, containerName)
 	}
 
-	if err := saveState(dataDir, s); err != nil {
+	// Persist VIN in state.json for single-vehicle restarts (no BMW_VINS set).
+	if len(vins) == 1 {
+		s.VIN = vins[0]
+	}
+
+	if err := saveState(statePath, s); err != nil {
 		log.Printf("[bmw] warning: could not save state: %v", err)
 	}
 
-	return s.VIN, s.ContainerID, nil
+	return vins, s.ContainerID, nil
 }
 
 func discoverVIN(ctx context.Context, client *Client) (string, error) {
@@ -230,10 +287,11 @@ func findContainer(ctx context.Context, client *Client) (string, error) {
 	return "", nil
 }
 
-// StartPoller starts the polling loop. On restart it checks the last poll time against interval
-// and reuses cached data if the interval hasn't elapsed yet, avoiding a needless API call.
-func StartPoller(ctx context.Context, client *Client, vin, containerID string, interval time.Duration, cache *Cache, dataDir string) {
-	s, _ := loadState(dataDir)
+// StartPoller starts the polling loop for a single VIN.
+// statePath is the full path to the state file used to persist poll time and cached data.
+// On restart it checks the last poll time and reuses cached data if the interval hasn't elapsed.
+func StartPoller(ctx context.Context, client *Client, vin, containerID string, interval time.Duration, cache *Cache, statePath string) {
+	s, _ := loadState(statePath)
 
 	delay := time.Duration(0)
 	if s != nil && s.CachedData != nil && !s.LastPollTime.IsZero() {
@@ -241,8 +299,8 @@ func StartPoller(ctx context.Context, client *Client, vin, containerID string, i
 		if elapsed < interval {
 			cache.Set(*s.CachedData)
 			delay = interval - elapsed
-			log.Printf("[poller] cached data loaded (polled %v ago), next poll in %v",
-				elapsed.Round(time.Second), delay.Round(time.Second))
+			log.Printf("[poller] VIN=%s cached data loaded (polled %v ago), next poll in %v",
+				vin, elapsed.Round(time.Second), delay.Round(time.Second))
 		}
 	}
 
@@ -252,29 +310,28 @@ func StartPoller(ctx context.Context, client *Client, vin, containerID string, i
 		return
 	}
 
-	poll(ctx, client, vin, containerID, cache, dataDir)
+	poll(ctx, client, vin, containerID, cache, statePath)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			poll(ctx, client, vin, containerID, cache, dataDir)
+			poll(ctx, client, vin, containerID, cache, statePath)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-
-func poll(ctx context.Context, client *Client, vin, containerID string, cache *Cache, dataDir string) {
+func poll(ctx context.Context, client *Client, vin, containerID string, cache *Cache, statePath string) {
 	data, err := client.getTelematicData(ctx, vin, containerID)
 	if err != nil {
-		log.Printf("[poll] error: %v", err)
+		log.Printf("[poll] VIN=%s error: %v", vin, err)
 		return
 	}
 	if data == nil {
-		log.Printf("[poll] empty response")
+		log.Printf("[poll] VIN=%s empty response", vin)
 		return
 	}
 
@@ -332,14 +389,13 @@ func poll(ctx context.Context, client *Client, vin, containerID string, cache *C
 
 	cache.Set(d)
 
-	// Persist to state.json so restarts can skip a poll if interval hasn't elapsed.
-	if s, err := loadState(dataDir); err == nil {
+	// Persist so restarts can skip a poll if interval hasn't elapsed.
+	if s, err := loadState(statePath); err == nil {
 		s.VIN = vin
-		s.ContainerID = containerID
 		s.LastPollTime = d.LastUpdate
 		s.CachedData = &d
-		if err := saveState(dataDir, s); err != nil {
-			log.Printf("[poll] warning: could not save state: %v", err)
+		if err := saveState(statePath, s); err != nil {
+			log.Printf("[poll] VIN=%s warning: could not save state: %v", vin, err)
 		}
 	}
 
