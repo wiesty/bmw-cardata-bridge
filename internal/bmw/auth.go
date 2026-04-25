@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -127,6 +128,11 @@ func (a *Auth) deviceCodeFlow(ctx context.Context) (*authSession, error) {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read device code response: %w", err)
+	}
+
 	var dc struct {
 		DeviceCode      string `json:"device_code"`
 		UserCode        string `json:"user_code"`
@@ -134,11 +140,11 @@ func (a *Auth) deviceCodeFlow(ctx context.Context) (*authSession, error) {
 		ExpiresIn       int    `json:"expires_in"`
 		Interval        int    `json:"interval"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&dc); err != nil {
-		return nil, fmt.Errorf("decode device code: %w", err)
+	if err := json.Unmarshal(body, &dc); err != nil {
+		return nil, fmt.Errorf("decode device code (status %s): body=%s err=%w", resp.Status, body, err)
 	}
 	if dc.DeviceCode == "" {
-		return nil, fmt.Errorf("empty device_code in response (status %s)", resp.Status)
+		return nil, fmt.Errorf("empty device_code in response (status %s): %s", resp.Status, body)
 	}
 
 	a.promptURI(dc.VerificationUri, dc.UserCode)

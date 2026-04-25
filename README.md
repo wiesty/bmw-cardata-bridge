@@ -91,12 +91,6 @@ Example: BEV (full electric)
 
 ### 1. Get a BMW Client ID
 
-1. Log in at [bmw-cardata.bmwgroup.com](https://bmw-cardata.bmwgroup.com)
-2. Go to **Technical Configuration → CarData API**
-3. Create a client and copy the **Client ID**
-
-or
-
 1. Login into your BMW Account
 2. Go to your [vehicle](https://www.bmw.de/de-de/mybmw/vehicle-overview?icp=navi_ocpflyout_garage)
 3. Select BMW CarData
